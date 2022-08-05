@@ -296,11 +296,11 @@ def parse_args():
                         help='Learning rate step size.') #[5,10]BIRND [10,15]BIPED/BRIND
     parser.add_argument('--batch_size',
                         type=int,
-                        default=8,
+                        default=4,
                         metavar='B',
                         help='the mini-batch size (default: 8)')
     parser.add_argument('--workers',
-                        default=16,
+                        default=0,
                         type=int,
                         help='The number of workers for the dataloaders.')
     parser.add_argument('--tensorboard',type=bool,
