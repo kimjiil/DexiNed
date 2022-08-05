@@ -7,4 +7,12 @@
 
 ## 준비물
 
-### 1.
+### 1. Download Dataset 
+* [Download BIPED dataset](https://drive.google.com/drive/folders/1lZuvJxL4dvhVGgiITmZsjUJPBBrFI_bM?usp=sharing)
+
+```commandline
+
+```
+
+### 2. Dataset Augmentation
+* [https://github.com/xavysp/MBIPED](https://github.com/xavysp/MBIPED)
