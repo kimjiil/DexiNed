@@ -315,6 +315,9 @@ class TestDataset(Dataset):
 
         return img, gt
 
+class OCRDataset(Dataset):
+    pass
+
 
 class BipedDataset(Dataset):
     train_modes = ['train', 'test', ]

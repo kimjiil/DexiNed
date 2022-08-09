@@ -10,15 +10,10 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from datasets import DATASET_NAMES, BipedDataset, TestDataset, dataset_info
-from ocr_dataset import OCRSyntheticDataset, OCRDataset
 from losses import *
 from model import DexiNed
 from utils import (image_normalization, save_image_batch_to_disk,
                    visualize_result,count_parameters)
-
-from transform.data_preprocessing import TrainAugmentation_Synth, TestTransform
-
-import matplotlib.pyplot as plt
 
 IS_LINUX = True if platform.system()=="Linux" else False
 def train_one_epoch(epoch, dataloader, model, criterion, optimizer, device,
@@ -34,28 +29,21 @@ def train_one_epoch(epoch, dataloader, model, criterion, optimizer, device,
     # l_weight = [[0.05, 2.], [0.05, 2.], [0.05, 2.],
     #             [0.1, 1.], [0.1, 1.], [0.1, 1.],
     #             [0.01, 4.]]  # for cats loss
-    loss_avg = []
-    for batch_id , (images, _, _, labels) in enumerate(dataloader):
-        images = images.to(device)  # BxCxHxW
-        labels = labels.to(device)  # BxHxW
+    loss_avg =[]
+    for batch_id, sample_batched in enumerate(dataloader):
+        images = sample_batched['images'].to(device)  # BxCxHxW
+        labels = sample_batched['labels'].to(device)  # BxHxW
         preds_list = model(images)
         # loss = sum([criterion(preds, labels, l_w, device) for preds, l_w in zip(preds_list, l_weight)])  # cats_loss
-
-        # loss = sum([criterion(preds, labels,l_w) for preds, l_w in zip(preds_list,l_weight)]) # bdcn_loss
-        loss_list = []
-        for preds, l_w in zip(preds_list, l_weight):
-            loss_list.append(criterion(preds, labels, l_w))
-
-        loss = sum(loss_list)
-
+        loss = sum([criterion(preds, labels,l_w) for preds, l_w in zip(preds_list,l_weight)]) # bdcn_loss
         # loss = sum([criterion(preds, labels) for preds in preds_list])  #HED loss, rcf_loss
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         loss_avg.append(loss.item())
-        # if epoch==0 and (batch_id==100 and tb_writer is not None):
-        #     tmp_loss = np.array(loss_avg).mean()
-        #     tb_writer.add_scalar('loss', tmp_loss,epoch)
+        if epoch==0 and (batch_id==100 and tb_writer is not None):
+            tmp_loss = np.array(loss_avg).mean()
+            tb_writer.add_scalar('loss', tmp_loss,epoch)
 
         if batch_id % 5 == 0:
             print(time.ctime(), 'Epoch: {0} Sample {1}/{2} Loss: {3}'
@@ -109,15 +97,15 @@ def validate_one_epoch(epoch, dataloader, model, device, output_dir, arg=None):
 
     with torch.no_grad():
         for _, sample_batched in enumerate(dataloader):
-            images = sample_batched[0].to(device)
+            images = sample_batched['images'].to(device)
             # labels = sample_batched['labels'].to(device)
-            file_names = sample_batched[3]
-            # image_shape = sample_batched['image_shape']
+            file_names = sample_batched['file_names']
+            image_shape = sample_batched['image_shape']
             preds = model(images)
             # print('pred shape', preds[0].shape)
             save_image_batch_to_disk(preds[-1],
                                      output_dir,
-                                     file_names,img_shape=(352, 352),
+                                     file_names,img_shape=image_shape,
                                      arg=arg)
 
 
@@ -162,6 +150,9 @@ def test(checkpoint_path, dataloader, model, device, output_dir, args):
     total_duration = np.sum(np.array(total_duration))
     print("******** Testing finished in", args.test_data, "dataset. *****")
     print("FPS: %f.4" % (len(dataloader)/total_duration))
+
+
+
 
 def testPich(checkpoint_path, dataloader, model, device, output_dir, args):
     # a test model plus the interganged channels
@@ -214,10 +205,10 @@ def parse_args():
     # ----------- test -------0--
 
 
-    TEST_DATA = DATASET_NAMES[0]#[parser.parse_args().choose_test_data] # max 8
+    TEST_DATA = DATASET_NAMES[parser.parse_args().choose_test_data] # max 8
     test_inf = dataset_info(TEST_DATA, is_linux=IS_LINUX)
     test_dir = test_inf['data_dir']
-    is_testing =True#  current test -352-SM-NewGT-2AugmenPublish
+    is_testing = False#True#  current test -352-SM-NewGT-2AugmenPublish
 
     # Training settings
     TRAIN_DATA = DATASET_NAMES[0] # BIPED=0, MDBD=6
@@ -228,7 +219,7 @@ def parse_args():
     # Data parameters
     parser.add_argument('--input_dir',
                         type=str,
-                        default=train_dir,
+                        default= 'C:/Users/user/Desktop/BIPEDv2/BIPED',
                         help='the path to the directory with the input data.')
     parser.add_argument('--input_val_dir',
                         type=str,
@@ -257,7 +248,7 @@ def parse_args():
                         default=train_inf['train_list'],
                         help='Dataset sample indices list.')
     parser.add_argument('--is_testing',type=bool,
-                        default=False,
+                        default=is_testing,
                         help='Script in testing mode.')
     parser.add_argument('--double_img',
                         type=bool,
@@ -379,47 +370,27 @@ def main(args):
             model.load_state_dict(torch.load(checkpoint_path,
                                          map_location=device))
             print('Training restarted from> ',checkpoint_path)
-        if True:
-            train_transform = TrainAugmentation_Synth(size=352,
-                                                      mean=np.array([0.485, 0.456, 0.406]),
-                                                      std=np.array([0.229, 0.224, 0.225]))
+        dataset_train = BipedDataset(args.input_dir,
+                                     img_width=args.img_width,
+                                     img_height=args.img_height,
+                                     mean_bgr=args.mean_pixel_values[0:3] if len(
+                                         args.mean_pixel_values) == 4 else args.mean_pixel_values,
+                                     train_mode='train',
+                                     arg=args
+                                     )
+        dataloader_train = DataLoader(dataset_train,
+                                      batch_size=args.batch_size,
+                                      shuffle=True,
+                                      num_workers=args.workers)
 
-            dataset_train = OCRSyntheticDataset(root=args.input_dir,
-                                                transform=train_transform,
-                                                target_transform=None,
-                                                is_test=False,
-                                                image_size=352)
-
-            test_transform = TestTransform(size=352,
-                                           mean=np.array([0.485, 0.456, 0.406]),
-                                           std=np.array([0.229, 0.224, 0.225]) )
-            dataset_val = OCRDataset(root=args.input_val_dir,
-                                     transform=test_transform,
-                                     target_transform=None,
-                                     is_test=False)
-        else:
-            dataset_train = BipedDataset(args.input_dir,
-                                         img_width=args.img_width,
-                                         img_height=args.img_height,
-                                         mean_bgr=args.mean_pixel_values[0:3] if len(
-                                             args.mean_pixel_values) == 4 else args.mean_pixel_values,
-                                         train_mode='train',
-                                         arg=args
-                                         )
-            dataset_val = TestDataset(args.input_val_dir,
-                                      test_data=args.test_data,
-                                      img_width=args.test_img_width,
-                                      img_height=args.test_img_height,
-                                      mean_bgr=args.mean_pixel_values[0:3] if len(
-                                          args.mean_pixel_values) == 4 else args.mean_pixel_values,
-                                      test_list=args.test_list, arg=args
-                                      )
-
-
-    dataloader_train = DataLoader(dataset_train,
-                                  batch_size=args.batch_size,
-                                  shuffle=True,
-                                  num_workers=args.workers)
+    dataset_val = TestDataset(args.input_val_dir,
+                              test_data=args.test_data,
+                              img_width=args.test_img_width,
+                              img_height=args.test_img_height,
+                              mean_bgr=args.mean_pixel_values[0:3] if len(
+                                  args.mean_pixel_values) == 4 else args.mean_pixel_values,
+                              test_list=args.test_list, arg=args
+                              )
     dataloader_val = DataLoader(dataset_val,
                                 batch_size=1,
                                 shuffle=False,
@@ -449,16 +420,12 @@ def main(args):
                            weight_decay=args.wd)
 
     # Main training loop
-    seed = 1022
+    seed=1021
     adjust_lr = args.adjust_lr
-    lr2 = args.lr
+    lr2= args.lr
+    for epoch in range(ini_epoch,args.epochs):
+        if epoch%7==0:
 
-    epoch_list = []
-    loss_list = []
-
-    for epoch in range(ini_epoch, args.epochs):
-        if epoch % 7 == 0:
-            seed = seed+1000
             seed = seed+1000
             np.random.seed(seed)
             torch.manual_seed(seed)
@@ -499,15 +466,6 @@ def main(args):
             tb_writer.add_scalar('loss',
                                  avg_loss,
                                  epoch+1)
-
-        print(f'epoch {epoch + 1} Avg Loss : {avg_loss}')
-        epoch_list.append(str(epoch + 1))
-        loss_list.append(avg_loss)
-
-        fig = plt.figure(figsize=(10, 5))
-        plt.plot(epoch_list, loss_list)
-        imgs_res_folder = os.path.join(args.output_dir, 'current_res')
-        plt.savefig(os.path.join(imgs_res_folder, 'loss_graph.png'))
         print('Current learning rate> ', optimizer.param_groups[0]['lr'])
     num_param = count_parameters(model)
     print('-------------------------------------------------------')
