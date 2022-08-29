@@ -10,19 +10,18 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from datasets import DATASET_NAMES, BipedDataset, TestDataset, dataset_info
-from ocr_dataset import OCRSyntheticDataset, OCRDataset
+from ocr_dataset import OCRSyntheticDataset, OCRValidDataset
 from losses import *
 from model import DexiNed
 from utils import (image_normalization, save_image_batch_to_disk,
                    visualize_result,count_parameters)
 
 from transform.data_preprocessing import TrainAugmentation_Synth, TestTransform
-
+import kornia as kn
 import matplotlib.pyplot as plt
 
 IS_LINUX = True if platform.system()=="Linux" else False
-def train_one_epoch(epoch, dataloader, model, criterion, optimizer, device,
-                    log_interval_vis, tb_writer, args=None):
+def train_one_epoch(epoch, dataloader, model, criterion, optimizer, device, log_interval_vis, tb_writer, args=None):
     imgs_res_folder = os.path.join(args.output_dir, 'current_res')
     os.makedirs(imgs_res_folder,exist_ok=True)
 
@@ -135,11 +134,15 @@ def test(checkpoint_path, dataloader, model, device, output_dir, args):
     with torch.no_grad():
         total_duration = []
         for batch_id, sample_batched in enumerate(dataloader):
-            images = sample_batched['images'].to(device)
-            if not args.test_data == "CLASSIC":
-                labels = sample_batched['labels'].to(device)
-            file_names = sample_batched['file_names']
-            image_shape = sample_batched['image_shape']
+            images = sample_batched[0].to(device)
+            # labels = sample_batched['labels'].to(device)
+            file_names = sample_batched[3]
+            # images = sample_batched['images'].to(device)
+            # if not args.test_data == "CLASSIC":
+            #     labels = sample_batched['labels'].to(device)
+            # file_names = sample_batched['file_names']
+            # image_shape = sample_batched['image_shape']
+
             print(f"input tensor shape: {images.shape}")
             # images = images[:, [2, 1, 0], :, :]
 
@@ -152,11 +155,20 @@ def test(checkpoint_path, dataloader, model, device, output_dir, args):
             tmp_duration = time.perf_counter() - end
             total_duration.append(tmp_duration)
 
-            save_image_batch_to_disk(preds,
-                                     output_dir,
-                                     file_names,
-                                     image_shape,
-                                     arg=args)
+            img = preds[-1]
+            img = kn.utils.tensor_to_image(torch.sigmoid(img))
+
+            img_vis = (255.0 * (1.0 - img)).astype(np.uint8)
+            print()
+            os.makedirs(output_dir, exist_ok=True)
+            output_file_nmae = os.path.join(output_dir, file_names[0])
+            cv2.imwrite(output_file_nmae, img_vis)
+
+            # save_image_batch_to_disk(preds,
+            #                          output_dir,
+            #                          file_names,
+            #                          (352, 352),
+            #                          arg=args)
             torch.cuda.empty_cache()
 
     total_duration = np.sum(np.array(total_duration))
@@ -257,7 +269,7 @@ def parse_args():
                         default=train_inf['train_list'],
                         help='Dataset sample indices list.')
     parser.add_argument('--is_testing',type=bool,
-                        default=False,
+                        default=True,
                         help='Script in testing mode.')
     parser.add_argument('--double_img',
                         type=bool,
@@ -269,7 +281,7 @@ def parse_args():
                         help='use previous trained data')  # Just for test
     parser.add_argument('--checkpoint_data',
                         type=str,
-                        default='10/10_model.pth',# 4 6 7 9 14
+                        default='537/537_model.pth',# 4 6 7 9 14
                         help='Checkpoint path from which to restore model weights from.')
     parser.add_argument('--test_img_width',
                         type=int,
@@ -393,7 +405,7 @@ def main(args):
             test_transform = TestTransform(size=352,
                                            mean=np.array([0.485, 0.456, 0.406]),
                                            std=np.array([0.229, 0.224, 0.225]) )
-            dataset_val = OCRDataset(root=args.input_val_dir,
+            dataset_val = OCRValidDataset(root=args.input_val_dir,
                                      transform=test_transform,
                                      target_transform=None,
                                      is_test=False)
@@ -414,12 +426,20 @@ def main(args):
                                           args.mean_pixel_values) == 4 else args.mean_pixel_values,
                                       test_list=args.test_list, arg=args
                                       )
+    else:
+        test_transform = TestTransform(size=352,
+                                       mean=np.array([0.485, 0.456, 0.406]),
+                                       std=np.array([0.229, 0.224, 0.225]))
+        dataset_val = OCRValidDataset(root=args.input_val_dir,
+                                 transform=test_transform,
+                                 target_transform=None,
+                                 is_test=False)
 
-
-    dataloader_train = DataLoader(dataset_train,
-                                  batch_size=args.batch_size,
-                                  shuffle=True,
-                                  num_workers=args.workers)
+    if not args.is_testing:
+        dataloader_train = DataLoader(dataset_train,
+                                      batch_size=args.batch_size,
+                                      shuffle=True,
+                                      num_workers=args.workers)
     dataloader_val = DataLoader(dataset_val,
                                 batch_size=1,
                                 shuffle=False,

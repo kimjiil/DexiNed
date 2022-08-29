@@ -1,11 +1,15 @@
 import numpy as np
 import logging
+
+import torch
+
 from utils.LMK_Decoder import lmk_decoder
 import cv2
 import os
 import pathlib
 import numpy as np
 import math
+import glob
 #
 # np.random.seed(0)
 '''
@@ -66,14 +70,21 @@ class OCRSyntheticDataset:
             image, boxes, labels = self.transform(image, boxes, labels)
         if self.target_transform:
             boxes, labels = self.target_transform(boxes.astype(np.float32), labels)
+
+        # 이거 원래 trasform 함수에 들어가있어야 됨 임시
         edge_labels = edge_labels.transpose(2, 0, 1)
         edge_labels = edge_labels / 255.0
-        return image, 1, 1, edge_labels.astype(np.float32)
+        # return image, 1, 1, edge_labels.astype(np.float32)
+        edge_labels = torch.from_numpy(edge_labels)
+        ###########################################
+
+
+        return dict(images=image, labels=edge_labels)
 
     def __len__(self):
-        return 30000
+        return 10
 
-    def _get_synth_image(self,index):
+    def _get_synth_image(self, index):
         number_of_char = np.random.randint(2, 11) #합성 이미지에 사용할 문자의 갯수 , 한이미지에 포함되는 문자의 수는 2개 ~ 10개
         char_label = np.random.randint(1, 36, number_of_char) # 합성 이미지에 사용할 문자의 class를 정함
         '''
@@ -97,7 +108,7 @@ class OCRSyntheticDataset:
             image, label = self._read_image(image_id,_char)
             boxes, _ = self._get_annotation(image_id,_char,'Font')
 
-            images.append([image,label,boxes])
+            images.append([image, label, boxes])
 
 
         #랜덤하게 배경 이미지를 추출
@@ -111,9 +122,9 @@ class OCRSyntheticDataset:
         #합성 이미지 생성
         synth_image, synth_boxes, _debug_image, synth_label = self._make_synth_image(images,bg_image)
 
-        return synth_image, synth_boxes, np.array(char_label,dtype=np.float32), _debug_image, synth_label
+        return synth_image, synth_boxes, np.array(char_label, dtype=np.float32), _debug_image, synth_label
 
-    def _get_font_idx(self,font):
+    def _get_font_idx(self, font):
         idx = self.font_idx[str(font)]
 
         self.font_idx[str(font)] += 1
@@ -383,7 +394,7 @@ class OCRSyntheticDataset:
         # _synth_window_label = cv2.resize(_synth_window_label, (self.image_size, self.image_size), interpolation=cv2.INTER_LINEAR)
 
         _synth_window_label = cv2.bitwise_not(_synth_window_image)
-        contour, hierachy = cv2.findContours(_synth_window_label[:, :, 0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        contour, hierachy = cv2.findContours(_synth_window_label[:, :, 0], cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
         _synth_window_label = cv2.drawContours(np.zeros_like(_synth_window_label), contour, -1, (255, 255, 255), 1)[:, :, 0:1]
 
         _synth_window_box = _synth_window_box[:] * [w_ratio, h_ratio, w_ratio, h_ratio]
@@ -435,7 +446,7 @@ class OCRSyntheticDataset:
 
         return image
 
-    def _get_annotation(self,image_id,label,type):
+    def _get_annotation(self, image_id, label, type):
         '''
             return box의 위치 , label
         '''
@@ -464,7 +475,7 @@ class OCRSyntheticDataset:
 
         return ids
 
-    def _read_image(self, image_id,label):
+    def _read_image(self, image_id, label):
         label_id = image_id.replace('.bmp', '.lmk')
         image_file = self.root / f"Font/{label}/{image_id}"
         label_file = self.root / f"Font/{label}/{label_id}"
@@ -475,79 +486,101 @@ class OCRSyntheticDataset:
         return image, label
 
 
-class OCRDataset:
+
+class OCRTrainDataset:
+    def __init__(self, root, transform, target_transform=None, image_size=352, is_test=False):
+        self.root = root
+        self.transform = transform
+        self.target_transform = target_transform
+        self.image_size = image_size
+        self.idx_list = self._get_ids()
+
+
+    def _get_ids(self):
+        _img_list = glob.glob(os.path.join(self.root, f'Image_*.bmp'))
+        return _img_list
+
+    def __len__(self):
+        return len(self.idx_list)
+
+    def __getitem__(self, idx):
+        img = cv2.imread(self.idx_list[idx])
+        label = cv2.imread(self.idx_list[idx].replace('Image_', "Label_"), cv2.IMREAD_GRAYSCALE)
+        n_box, classes, boxes = lmk_decoder(self.idx_list[idx].replace('.bmp', '.lmk'))
+        boxes = np.array(boxes, dtype=np.float32)
+
+        if self.transform:
+            img, boxes, label = self.transform(img, boxes, label)
+
+        if self.target_transform:
+            img, boxes, label = self.target_transform(img, boxes, label)
+
+        # 이거 원래 transform 안에 포함되어있어야됨
+        label = label[np.newaxis, :, :]
+        label = torch.from_numpy(label)
+        ###########################
+
+        return dict(images=img, labels=label)
+
+
+class OCRValidDataset:
 
     def __init__(self, root, transform=None, target_transform=None, is_test=False):
-        self.root = pathlib.Path(root)
+        self.root = root
         self.transform = transform
         self.target_transform = target_transform
         if is_test:
-            image_sets_file = self.root / "ImageSets/test.txt"
+            image_sets_file = os.path.join(self.root, "ImageSets/test.txt")
         else:
-            image_sets_file = self.root / "ImageSets/trainval.txt"
-        self.ids = OCRDataset._read_image_ids(image_sets_file)
-
-        # if the labels file exists, read in the class names
-        label_file_name = self.root / "labels.txt"
-
-        if os.path.isfile(label_file_name):
-            class_string = ""
-            with open(label_file_name, 'r') as infile:
-                for line in infile:
-                    class_string += line.rstrip()
-
-            # classes should be a comma separated list
-
-            classes = class_string.split(',')
-            # prepend BACKGROUND as first class
-            classes.insert(0, 'BACKGROUND')
-            classes = [elem.replace(" ", "") for elem in classes]
-            self.class_names = tuple(classes)
-            logging.info("Labels read from file: " + str(self.class_names))
-
-        else:
-            logging.info("No labels file, using default classes.")
-            self.class_names = ('BACKGROUND',
-                                '0', '1', '2', '3','4','5','6','7','8','9',
-                                'A', 'B', 'C', 'D', 'E','F','G','H','I','J',
-                                'K', 'L', 'M', 'N','O','P','Q','R','S','T',
-                                'U', 'V', 'W','X','Y','Z')
-
-        self.class_dict = {class_name: i for i, class_name in enumerate(self.class_names)}
+            image_sets_file = os.path.join(self.root, "ImageSets/trainval.txt")
+        self.ids = self._read_image_ids(image_sets_file)
 
     def __getitem__(self, index):
-        image_id = self.ids[index]
-        boxes, labels = self._get_annotation(image_id)
-        image = self._read_image(image_id)
+        img_path = self.ids[index] # image_path
+        boxes, class_label = self._get_annotation(img_path)
+        image = self._read_image(img_path)
+        label = 0
+        temp = [i.split('\\') for i in img_path.split('/')]
+        path_list = []
+        for t in temp:
+            path_list.extend(t)
+        file_name = img_path.split('/')[-1].split('\\')[-1]
+        folder_name = path_list[-2]
+        print(img_path)
+        im_shape = np.array([image.shape[0], image.shape[1]])
         if self.transform:
-            image, boxes, labels = self.transform(image, boxes, labels)
+            image, boxes, class_label = self.transform(image, boxes, class_label)
         if self.target_transform:
-            boxes, labels = self.target_transform(boxes, labels)
-        return image, boxes, labels, f'Image_{image_id}.bmp'
+            boxes, labels = self.target_transform(boxes, class_label)
+
+        return dict(images=image, labels=label, file_names=file_name, image_shape=im_shape, folder_name=folder_name)
+        # return image, boxes, labels, f'Image_{image_id}.bmp'
 
     def __len__(self):
-        return 30#len(self.ids)
+        return len(self.ids)
 
-    @staticmethod
-    def _read_image_ids(image_sets_file):
+    def _read_image_ids(self, image_sets_file):
         ids = []
-        with open(image_sets_file) as f:
-            for line in f:
-                ids.append(line.rstrip())
+        if os.path.exists(image_sets_file):
+            with open(image_sets_file) as f:
+                for line in f:
+                    image_path = os.path.join(self.root, "Images", f"Image_{line.rstrip()}.bmp")
+                    ids.append(image_path)
+        else:
+            ids = [os.path.join(self.root, file_name) for file_name in os.listdir(self.root)
+                         if not file_name.startswith('Label_') and not file_name.endswith('.lmk')]
         return ids
 
-    def _get_annotation(self,image_id):
+    def _get_annotation(self, img_path):
         '''
             return box의 위치 , label
         '''
-        annotation_file = self.root / f"Images/Image_{image_id}.lmk"
-        int_nBoxCnt, label_list, box_list = lmk_decoder(annotation_file)
+        annotation_path = img_path.replace('.bmp', '.lmk')
+        int_nBoxCnt, label_list, box_list = lmk_decoder(annotation_path)
 
-        return (np.array(box_list,dtype=np.float32),
-                np.array(label_list,dtype=np.float32))
+        return (np.array(box_list, dtype=np.float32),
+                np.array(label_list, dtype=np.float32))
 
-    def _read_image(self, image_id):
-        image_file = self.root / f"Images/Image_{image_id}.bmp"
-        image = cv2.imread(str(image_file),cv2.IMREAD_COLOR)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    def _read_image(self, img_path):
+        image = cv2.imread(img_path, cv2.IMREAD_COLOR)
         return image

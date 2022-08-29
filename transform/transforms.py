@@ -54,6 +54,13 @@ class Compose(object):
             img, boxes, labels = t(img, boxes, labels)
         return img, boxes, labels
 
+class get_edge(object):
+    def __call__(self, image, boxes=None, labels=None):
+        _, _threhold_img = cv2.threshold(labels, 1, 255, cv2.THRESH_BINARY)
+        contour, _ = cv2.findContours(_threhold_img, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+        labels = cv2.drawContours(np.zeros_like(_threhold_img), contour, -1, (255, 255, 255), 1)
+
+        return image, boxes, labels / 255.0
 
 class Lambda(object):
     """Applies a lambda as a transform."""
@@ -72,7 +79,7 @@ class ConvertFromInts(object):
 
 
 class ImgNormalize(object):
-    def __init__(self, mean,std):
+    def __init__(self, mean, std):
         self.mean = np.array(mean, dtype=np.float32)
         self.std = np.array(std, dtype=np.float32)
 
@@ -104,6 +111,15 @@ class ToPercentCoords(object):
 
         return image, boxes, labels
 
+class Resize_edge(object):
+    def __init__(self, size=300):
+        self.size = size
+
+    def __call__(self, image, boxes=None, labels=None):
+        image = cv2.resize(image, (self.size, self.size))
+        labels = cv2.resize(labels, (self.size, self.size))
+
+        return image, boxes, labels
 
 class Resize(object):
     def __init__(self, size=300):
@@ -323,16 +339,125 @@ class RandomSampleCrop_OCRver(object):
                 # adjust to crop (by substracting crop's left,top)
                 current_boxes[:, 2:] -= rect[:2]
 
-                # debug box view
-                _test_image = current_image.copy()
-                for _bbox in current_boxes:
-                    _left = round(_bbox[0])
-                    _top = round(_bbox[1])
-                    _right = round(_bbox[2])
-                    _bottom = round(_bbox[3])
-                    cv2.rectangle(_test_image, (_left, _top), (_right, _bottom), (0, 0, 255), 1)
+                # # debug box view
+                # _test_image = current_image.copy()
+                # for _bbox in current_boxes:
+                #     _left = round(_bbox[0])
+                #     _top = round(_bbox[1])
+                #     _right = round(_bbox[2])
+                #     _bottom = round(_bbox[3])
+                #     cv2.rectangle(_test_image, (_left, _top), (_right, _bottom), (0, 0, 255), 1)
 
                 return current_image, current_boxes, current_labels
+
+class RandomSampleCrop_OCRver_edge(object):
+
+    def __init__(self):
+        self.sample_options = (
+            # using entire original input image
+            None,
+            # sample a patch s.t. MIN jaccard w/ obj in .1,.3,.4,.7,.9
+            (0.1, None),
+            (0.3, None),
+            (0.7, None),
+            (0.9, None),
+            # randomly sample a patch
+            (None, None),
+        )
+
+    def __call__(self, image, boxes=None, labels=None):
+        height, width, _ = image.shape
+        while True:
+            # randomly choose a mode
+            mode = random.choice(self.sample_options)
+            if mode is None:
+                return image, boxes, labels
+
+            min_iou, max_iou = mode
+            if min_iou is None:
+                min_iou = float('-inf')
+            if max_iou is None:
+                max_iou = float('inf')
+
+            # max trails (50)
+            for _ in range(50):
+                current_image = image
+
+                # 전체 이미지에서 30퍼~100퍼 사이로 랜덤하게 사이즈 설정
+                w = random.uniform(0.3 * width, width)
+                h = random.uniform(0.3 * height, height)
+
+                # aspect ratio constraint b/t .5 & 2
+                # 넓이가 높이보다 2배 크지 않으면 X
+                # 높이가 넓이보다 2배 크면 X
+                if h / w < 0.5 or h / w > 2:
+                    continue
+
+                left = random.uniform(width - w)
+                top = random.uniform(height - h)
+
+                # convert to integer rect x1,y1,x2,y2
+                rect = np.array([int(left), int(top), int(left+w), int(top+h)])
+
+                # calculate IoU (jaccard overlap) b/t the cropped and gt boxes
+                overlap = jaccard_numpy(boxes, rect)
+
+                # is min and max overlap constraint satisfied? if not try again
+                if overlap.min() < min_iou and max_iou < overlap.max():
+                    continue
+
+                # cut the crop from the image
+                current_image = current_image[rect[1]:rect[3], rect[0]:rect[2],
+                                              :]
+
+                current_label = labels[rect[1]:rect[3], rect[0]:rect[2]]
+
+                # keep overlap with gt box IF center in sampled patch
+                centers = (boxes[:, :2] + boxes[:, 2:]) / 2.0
+
+                # pad size
+                width_pad = np.floor((boxes[:, 2:] - boxes[:, :2])*0.15)[:,0]
+                height_pad = np.floor((boxes[:, 2:] - boxes[:, :2])*0.15)[:,1]
+
+                # mask in all gt boxes that above and to the left of centers
+                m1 = (rect[0] < (boxes[:, 0] + width_pad)) * (rect[1] < (boxes[:, 1] + height_pad))
+
+                # mask in all gt boxes that under and to the right of centers
+                m2 = (rect[2] > (boxes[:, 2] - width_pad)) * (rect[3] > (boxes[:, 3] - height_pad))
+
+                # mask in that both m1 and m2 are true
+                # gt_box의 중심이 crop한 박스 내의 속하는지 아닌지 판별하는 mask
+                mask = m1 * m2
+
+                # have any valid boxes? try again if not
+                # crop한 박스 내의 속하는 gt_box가 없으면 다시 랜덤 Crop
+                if not mask.any():
+                    continue
+
+                # take only matching gt boxes
+                current_boxes = boxes[mask, :].copy()
+
+                # should we use the box left and top corner or the crop's
+                current_boxes[:, :2] = np.maximum(current_boxes[:, :2],
+                                                  rect[:2])
+                # adjust to crop (by substracting crop's left,top)
+                current_boxes[:, :2] -= rect[:2]
+
+                current_boxes[:, 2:] = np.minimum(current_boxes[:, 2:],
+                                                  rect[2:])
+                # adjust to crop (by substracting crop's left,top)
+                current_boxes[:, 2:] -= rect[:2]
+
+                # # debug box view
+                # _test_image = current_image.copy()
+                # for _bbox in current_boxes:
+                #     _left = round(_bbox[0])
+                #     _top = round(_bbox[1])
+                #     _right = round(_bbox[2])
+                #     _bottom = round(_bbox[3])
+                #     cv2.rectangle(_test_image, (_left, _top), (_right, _bottom), (0, 0, 255), 1)
+
+                return current_image, current_boxes, current_label
 
 class RandomSampleCrop(object):
     """Crop

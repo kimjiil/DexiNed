@@ -34,6 +34,40 @@ class TrainAugmentation_Synth:
         """
         return self.augment(img, boxes, labels)
 
+class TrainAugmentation_normalOCR:
+    def __init__(self, size, mean=0, std=1.0):
+        """
+        Args:
+            size: the size the of final image.
+            mean: mean pixel value per channel.
+        """
+        self.mean = mean
+        self.size = size
+        self.std = std
+
+        # train augment
+        self.augment = Compose([
+            RandomSampleCrop_OCRver_edge(),
+            ConvertFromInts(),
+            ToPercentCoords(),
+            Resize_edge(self.size),
+            RandomGaussianBlur(),
+            ImgNormalize(self.mean, self.std),
+            get_edge(),
+            ToTensor(),
+        ])
+
+    def __call__(self, img, boxes, labels):
+        """
+
+        Args:
+            img: the output of cv.imread in RGB layout.
+            boxes: boundding boxes in the form of (x1, y1, x2, y2).
+            labels: labels of boxes.
+        """
+        return self.augment(img, boxes, labels)
+
+
 class TrainAugmentation:
     def __init__(self, size, mean=0, std=1.0):
         """

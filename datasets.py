@@ -260,7 +260,7 @@ class TestDataset(Dataset):
         else:
             label = None
 
-        im_shape = [image.shape[0], image.shape[1]]
+        im_shape = np.array([image.shape[0], image.shape[1]])
         image, label = self.transform(img=image, gt=label)
 
         return dict(images=image, labels=label, file_names=file_name, image_shape=im_shape)
@@ -404,7 +404,7 @@ class BipedDataset(Dataset):
         return sample_indices
 
     def __len__(self):
-        return len(self.data_index)
+        return 10#len(self.data_index)
 
     def __getitem__(self, idx):
         # get data sample

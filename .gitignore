@@ -106,3 +106,8 @@ venv.bak/
 *.xml
 *.pth
 *.bmp
+checkpoints/current_res/results.png
+*.lmk
+*.png
+*.png
+*.png
